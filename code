@@ -1,1 +1,990 @@
 
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import re
+import nltk
+from nltk.tokenize import sent_tokenize
+
+# Download NLTK sentence tokenizer data
+nltk.download('punkt')
+nltk.download('punkt_tab')
+
+def fetch_content(url):
+    """Fetches HTML content from the RBI website."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+        return None
+
+def clean_text(text):
+    """
+    Cleans text by removing footnote markers, consolidating whitespace,
+    and standardizing line breaks as specified in the paper.
+    """
+    if not text:
+        return ""
+    # Remove footnote markers like [1], [2], or asterisks
+    text = re.sub(r'\[\d+\]', '', text)
+    text = re.sub(r'\*', '', text)
+    # Consolidate whitespace and standardize line breaks
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def filter_sentences(text, min_words=3):
+    """
+    Tokenizes text into sentences and filters out irrelevant ones
+    (e.g., less than 3 words) as outlined in Appendix A of the paper.
+    """
+    sentences = sent_tokenize(text)
+    valid_sentences = []
+    for sent in sentences:
+        if len(sent.split()) >= min_words:
+            valid_sentences.append(sent)
+    return " ".join(valid_sentences)
+
+def process_mps(html_content, metadata):
+    """
+    Extracts and structures Monetary Policy Statements (MPS).
+    Divides the text into individual paragraphs.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    paragraphs = soup.find_all('p')
+
+    structured_data = []
+    for i, p in enumerate(paragraphs):
+        raw_text = p.get_text()
+        cleaned_text = clean_text(raw_text)
+        filtered_text = filter_sentences(cleaned_text)
+
+        if filtered_text:
+            row = metadata.copy()
+            row['paragraph_id'] = f"{metadata['date']}_p{i}"
+            row['speaker'] = "RBI MPC" # Official statement
+            row['text'] = filtered_text
+            structured_data.append(row)
+
+    return structured_data
+
+def process_qna(html_content, metadata):
+    """
+    Extracts and structures Post-Monetary Policy Press Conference Q&As.
+    Separates text into distinct question-answer pairs and isolates
+    answers from the Governor and Deputy Governors.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    paragraphs = soup.find_all(['p', 'div'])
+
+    structured_data = []
+    current_speaker = None
+
+    # Target titles to extract (Governors and Deputy Governors)
+    target_speakers = ['governor', 'deputy governor', 'shaktikanta das', 'michael', 'patra', 'rajan', 'urjit', 'patel']
+
+    for i, p in enumerate(paragraphs):
+        raw_text = p.get_text()
+        cleaned_text = clean_text(raw_text)
+
+        # Detect Speaker change (Usually formatted as "Speaker Name: Text")
+        speaker_match = re.match(r"^([A-Za-z\s\.\,]+):", cleaned_text)
+        if speaker_match:
+            current_speaker = speaker_match.group(1).strip()
+            # Remove the speaker name from the actual text
+            cleaned_text = cleaned_text[len(speaker_match.group(0)):].strip().lower()
+
+        filtered_text = filter_sentences(cleaned_text)
+
+        # Only save the text if we have a valid speaker and the speaker is a Governor/DG
+        if filtered_text and current_speaker:
+            is_target = any(target.lower() in current_speaker.lower() for target in target_speakers)
+            if is_target:
+                row = metadata.copy()
+                row['paragraph_id'] = f"{metadata['date']}_qna_{i}"
+                row['speaker'] = current_speaker
+                row['text'] = filtered_text
+                structured_data.append(row)
+
+    return structured_data
+
+def main():
+    # Your provided list of URLs (truncated here for brevity, keep your full list)
+    sample_rbi_urls = [
+    # 2016
+    { "date": "2016-04-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=36654", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2016-04-05", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1246", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2016-06-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=37151", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2016-06-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1243", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2016-08-09", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=37734", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2016-10-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=38224", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2016-12-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=38818", "source_type": "Monetary Policy Statement", "is_pdf": False },
+
+    # 2017
+    { "date": "2017-02-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=39505", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2017-02-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1238", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2017-04-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=40069", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2017-04-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1237", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2017-06-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=40685", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2017-08-02", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=41256", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2017-10-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=41852", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2017-12-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=42476", "source_type": "Monetary Policy Statement", "is_pdf": False },
+
+    # 2018
+    { "date": "2018-02-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=43078", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-02-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1232", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2018-04-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=43573", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-04-05", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1231", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2018-06-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=44125", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-08-01", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=44636", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-08-01", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1229", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2018-10-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=45152", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-12-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=45656", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2018-12-05", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1227", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2019
+    { "date": "2019-02-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=46235", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2019-02-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1225", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2019-04-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=46722", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2019-04-04", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1223", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2019-06-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=47225", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2019-06-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1221", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2019-08-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=47818", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2019-08-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1220", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2019-10-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=48319", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2019-10-04", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1217", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2019-12-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=48802", "source_type": "Monetary Policy Statement", "is_pdf": False },
+
+    # 2020
+    { "date": "2020-02-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=49342", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2020-02-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1214", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2020-05-22", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=49843", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2020-08-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=50175", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2020-10-09", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=50479", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2020-12-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=50747", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2020-12-04", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1213", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2021
+    { "date": "2021-02-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=51077", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2021-04-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1211", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2021-06-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=51683", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2021-06-04", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1210", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2021-08-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=52011", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2021-08-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1209", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2021-10-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=52366", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2021-10-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1208", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2021-12-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=52687", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2021-12-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1207", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2022
+    { "date": "2022-02-10", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=53247", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-02-10", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1206", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2022-04-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=53537", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-04-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1205", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2022-05-04", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=53652", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-06-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=53832", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-08-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=54148", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-08-05", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1320", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2022-09-30", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=54465", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-09-30", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1329", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2022-12-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=54818", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2022-12-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1343", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2023
+    { "date": "2023-02-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=55178", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-02-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1350", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2023-04-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=55472", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-04-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1360", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2023-06-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=55814", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-06-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1368", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2023-08-10", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=56173", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-08-10", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1378", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2023-10-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=56502", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-10-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1387", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2023-12-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=56888", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2023-12-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1398", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2024
+    { "date": "2024-02-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=57275", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-02-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1417", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2024-04-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=57637", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-06-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=58050", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-06-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1436", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2024-08-08", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=58447", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-08-08", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1451", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2024-10-09", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=58850", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-10-09", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1469", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2024-12-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=59244", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2024-12-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1490", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2025
+    { "date": "2025-02-07", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=59692", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-02-07", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1494", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2025-04-09", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=60176", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-04-09", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1504", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2025-06-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=60604", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-06-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1509", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2025-08-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=60957", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-08-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1518", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2025-10-01", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=61332", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-10-01", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1523", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+    { "date": "2025-12-05", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=61749", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2025-12-05", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1537", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False },
+
+    # 2026
+    { "date": "2026-02-06", "url": "https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=62169", "source_type": "Monetary Policy Statement", "is_pdf": False },
+    { "date": "2026-02-06", "url": "https://rbi.org.in/scripts/BS_SpeechesView.aspx?Id=1543", "source_type": "Post Monetary Policy Press Conference", "is_pdf": False }
+    ]
+
+
+    all_extracted_data = []
+
+    print(f"Starting data extraction for {len(sample_rbi_urls)} documents...")
+
+    for item in sample_rbi_urls:
+        if item['is_pdf']:
+            print(f"Skipping PDF for now: {item['url']}")
+            continue
+
+        print(f"Fetching {item['source_type']} from {item['date']}...")
+        html_content = fetch_content(item['url'])
+
+        if html_content:
+            metadata = {
+                'date': item['date'],
+                'source_type': item['source_type'],
+                'url': item['url']
+            }
+
+            if item['source_type'] == "Monetary Policy Statement":
+                doc_data = process_mps(html_content, metadata)
+            elif item['source_type'] == "Post Monetary Policy Press Conference":
+                doc_data = process_qna(html_content, metadata)
+
+            all_extracted_data.extend(doc_data)
+
+    # Compile into a unified dataset
+    df = pd.DataFrame(all_extracted_data)
+
+    # Save to CSV for the next phase of your project
+    df.to_csv("rbi_monetary_policy_corpus.csv", index=False)
+    print("\nData preprocessing complete! Saved to 'rbi_monetary_policy_corpus.csv'")
+    print(f"Total structured paragraphs/answers extracted: {len(df)}")
+
+if __name__ == "__main__":
+    main()
+
+
+import numpy as np
+import yfinance as yf
+def download_sensex_data(start_date="2016-01-01", end_date="2026-02-28"):
+    """
+    Downloads daily OHLC data for BSE Sensex and calculates the specific
+    log return metric used in the research paper.
+    """
+    print(f"Downloading BSE Sensex data from {start_date} to {end_date}...")
+
+    # ^BSESN is the Yahoo Finance ticker for the BSE Sensex
+    df = yf.download("^BSESN", start=start_date, end=end_date)
+
+    # The paper calculates return as the log difference between closing and opening prices
+    # on the day of the MPC meeting. We calculate this for all days.
+    df['log_return'] = np.log(df['Close']) - np.log(df['Open'])
+
+    # Reset index to make 'Date' a column
+    df.reset_index(inplace=True)
+
+    # Save to CSV
+    df.to_csv("bse_sensex.csv", index=False)
+    print(f"Saved {len(df)} days of market data to bse_sensex.csv\n")
+    return df
+if __name__ == "__main__":
+    # 1. Get the Market Data
+    sensex_df = download_sensex_data()
+
+
+import pandas as pd
+from sentence_transformers import SentenceTransformer
+from umap import UMAP
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
+from bertopic import BERTopic
+
+def main():
+    print("Loading the dataset...")
+    # 1. Load the data from Phase 1
+    df = pd.read_csv("rbi_monetary_policy_corpus.csv")
+
+    # Drop any empty rows just in case, and ensure everything is a string
+    df = df.dropna(subset=['text'])
+    docs = df['text'].astype(str).tolist()
+    print(f"Loaded {len(docs)} sentences for modeling.")
+
+    # 2. Generate Embeddings
+    # The paper explicitly uses the "all-MiniLM-L6-v2" model because it is
+    # highly efficient and performs well on semantic similarity tasks.
+    print("Generating sentence embeddings (this might take a few minutes)...")
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    embeddings = embedding_model.encode(docs, show_progress_bar=True)
+
+    # 3. Dimensionality Reduction (UMAP)
+    # The paper sets n_neighbors=15 and n_components=5 to balance local
+    # structure preservation with global dimensionality reduction.
+    print("Setting up UMAP for dimensionality reduction...")
+    umap_model = UMAP(
+        n_neighbors=15,
+        n_components=5,
+        min_dist=0.0,
+        metric='cosine',
+        random_state=42 # Set random_state for reproducibility
+    )
+
+    # 4. Clustering (HDBSCAN)
+    # The paper uses min_cluster_size=50 to ensure topics have substantial
+    # support in the data and to minimize spurious/junk topics.
+    print("Setting up HDBSCAN for clustering...")
+    hdbscan_model = HDBSCAN(
+        min_cluster_size=50,
+        min_samples=12,
+        metric='euclidean',
+        cluster_selection_method='eom',
+        prediction_data=True
+    )
+
+    # 5. Topic Representation (CountVectorizer for c-TF-IDF)
+    # We remove standard English stop words so the model focuses on financial terms
+    vectorizer_model = CountVectorizer(stop_words="english")
+
+    # 6. Initialize and Train BERTopic
+    print("Training the BERTopic model...")
+    topic_model = BERTopic(
+        embedding_model=embedding_model,
+        umap_model=umap_model,
+        hdbscan_model=hdbscan_model,
+        vectorizer_model=vectorizer_model,
+        calculate_probabilities=False # Set to True if you want soft-clustering, but False is faster
+    )
+
+    # Fit the model and extract topics
+    topics, probs = topic_model.fit_transform(docs, embeddings)
+
+    # 7. Review and Save Results
+    # Attach the assigned topic numbers back to our original dataframe
+    df['topic_id'] = topics
+
+    # Save the updated dataframe
+    df.to_csv("rbi_corpus_with_topics.csv", index=False)
+
+    # Save the BERTopic model so you don't have to retrain it later!
+    topic_model.save("rbi_bertopic_model_dir", serialization="safetensors", save_ctfidf=True)
+
+    print("\nModel Training Complete!")
+    print("\n--- Top Identified Topics ---")
+    # This prints a dataframe showing the Topic ID, Count of sentences, and the top words
+    print(topic_model.get_topic_info().head(10))
+
+if __name__ == "__main__":
+    main()
+
+
+from bertopic import BERTopic
+
+# 1. Load the model from the folder we saved it in
+topic_model = BERTopic.load("rbi_bertopic_model_dir")
+
+# 2. Now you can get the topic info!
+topic_model.get_topic_info()
+
+import pandas as pd
+
+def clean_and_map_topics():
+    # Load your dataset that has the 'topic_id' column from BERTopic
+    df = pd.read_csv("rbi_corpus_with_topics.csv")
+
+    # Define a dictionary mapping the topic IDs to human-readable names
+    topic_mapping = {
+        0: "Liquidity Management and Banking Sector",
+        3: "Economic Growth and Demand Dynamics",
+        5: "production",
+        1: "Inflation ",
+        4: "Inflation ",
+        7: "Financial Markets and External Sector"
+    }
+
+    # Map the IDs to the new column 'topic_name'.
+    # Anything not in the dictionary (like -1, 1, 6, 9, 10, 11) gets a NaN
+    df['topic_name'] = df['topic_id'].map(topic_mapping)
+
+    # Drop all the rows that didn't get a name (this drops all the noise and procedural text!)
+    df_clean = df.dropna(subset=['topic_name']).copy()
+
+    # Save the cleaned dataset ready for sentiment analysis
+    df_clean.to_csv("rbi_corpus_topics_cleaned.csv", index=False)
+
+    print(f"Original dataset size: {len(df)} rows")
+    print(f"Cleaned dataset size: {len(df_clean)} rows")
+    print("\nTopic Breakdown:")
+    print(df_clean['topic_name'].value_counts())
+
+if __name__ == "__main__":
+    clean_and_map_topics()
+
+import pandas as pd
+from transformers import pipeline
+from tqdm import tqdm
+
+def get_monetary_sentiment(label):
+    """Maps standard financial sentiment to Central Bank terminology."""
+    label = label.lower()
+    if label == 'positive':
+        return 'Dovish'
+    elif label == 'negative':
+        return 'Hawkish'
+    else:
+        return 'Neutral'
+
+print("Loading cleaned dataset...")
+# Load the cleaned dataset you just created
+df = pd.read_csv("rbi_corpus_topics_cleaned.csv")
+
+# Safety catch to ensure we don't pass empty rows to the model
+df = df.dropna(subset=['text'])
+
+print("Loading FinBERT Sentiment Model (this may take a moment)...")
+# We apply truncation and max_length here to prevent crashing on long paragraphs
+sentiment_pipeline = pipeline(
+    "text-classification",
+    model="yiyanghkust/finbert-tone",
+    device=-1, # -1 forces CPU to avoid memory limits. Change to 0 if you have a GPU.
+    truncation=True,
+    max_length=512
+)
+
+print(f"Running sentiment analysis on {len(df)} sentences...")
+texts = df['text'].astype(str).tolist()
+
+sentiments = []
+scores = []
+
+# Process one-by-one safely with a progress bar
+for text in tqdm(texts):
+    # The pipeline returns a list with a dict: [{'label': 'Neutral', 'score': 0.99}]
+    result = sentiment_pipeline(text)[0]
+
+    # Translate the FinBERT label to Hawkish/Dovish/Neutral
+    mapped_sentiment = get_monetary_sentiment(result['label'])
+
+    sentiments.append(mapped_sentiment)
+    scores.append(result['score'])
+
+# Append the results back to the dataframe
+df['sentiment'] = sentiments
+df['sentiment_confidence'] = scores
+
+# Save the ultimate final dataset!
+df.to_csv("rbi_final_analyzed_dataset.csv", index=False)
+
+print("\nPhase 3 Complete! Final dataset saved to 'rbi_final_analyzed_dataset.csv'")
+
+print("\n--- Overall Sentiment Distribution ---")
+print(df['sentiment'].value_counts())
+
+print("\n--- Sentiment Breakdown by Topic ---")
+print(pd.crosstab(df['topic_name'], df['sentiment']))
+
+
+import pandas as pd
+import numpy as np
+
+def calculate_daily_sentiment():
+    print("Loading sentence-level dataset...")
+    # Load your final dataset from Phase 3
+    df = pd.read_csv("rbi_final_analyzed_dataset.csv")
+
+    # Create binary columns to easily count the sentiments
+    df['is_dovish'] = (df['sentiment'] == 'Dovish').astype(int)
+    df['is_hawkish'] = (df['sentiment'] == 'Hawkish').astype(int)
+    df['is_neutral'] = (df['sentiment'] == 'Neutral').astype(int)
+
+    print("Aggregating scores by Date and Topic...")
+    # Group the data by both the meeting 'date' and the 'topic_name'
+    daily_topic_sentiment = df.groupby(['date', 'topic_name']).agg(
+        total_sentences=('text', 'count'),
+        dovish_count=('is_dovish', 'sum'),
+        hawkish_count=('is_hawkish', 'sum'),
+        neutral_count=('is_neutral', 'sum')
+    ).reset_index()
+
+    print("Calculating Sentiment Balance...")
+    # Calculate the Sentiment Balance as defined in the paper:
+    # (Dovish - Hawkish) / (Dovish + Hawkish)
+
+    # We calculate the denominator first
+    denominator = daily_topic_sentiment['dovish_count'] + daily_topic_sentiment['hawkish_count']
+
+    # We use np.where to avoid division by zero errors
+    # (e.g., if a topic only had 'Neutral' sentences that day)
+    daily_topic_sentiment['sentiment_balance'] = np.where(
+        denominator > 0,
+        (daily_topic_sentiment['dovish_count'] - daily_topic_sentiment['hawkish_count']) / denominator,
+        0  # Default to 0 if the denominator is 0
+    )
+
+    # Save the final time-series dataset!
+    output_filename = "rbi_daily_sentiment_for_regression.csv"
+    daily_topic_sentiment.to_csv(output_filename, index=False)
+
+    print(f"\nAggregation complete! Saved to '{output_filename}'")
+
+    # Display a preview of the structured data
+    print("\nPreview of your Regression-Ready Data:")
+    print(daily_topic_sentiment[['date', 'topic_name', 'sentiment_balance']].head(10))
+
+if __name__ == "__main__":
+    calculate_daily_sentiment()
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def create_visualizations():
+    print("Loading aggregated daily sentiment data...")
+    # Load the daily aggregated dataset you just created
+    df = pd.read_csv("rbi_daily_sentiment_for_regression.csv")
+
+    # Convert 'date' to actual datetime objects and sort them
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+
+    # Create a cleaner string version of the date for the X-axis labels (Year-Month)
+    df['date_str'] = df['date'].dt.strftime('%Y-%m')
+
+    # ==========================================
+    # Graph 1: Topic Distribution Heatmap
+    # ==========================================
+    print("Generating Topic Distribution Heatmap...")
+    # Pivot the data: Rows = Topics, Columns = Dates, Values = Sentence Counts
+    topic_pivot = df.pivot_table(
+        index='topic_name',
+        columns='date_str',
+        values='total_sentences',
+        aggfunc='sum'
+    ).fillna(0)
+
+    plt.figure(figsize=(16, 8))
+    # Using a blue color map just like Figure 2 in the paper
+    sns.heatmap(topic_pivot, cmap="Blues", linewidths=.5, cbar_kws={'label': 'Number of Sentences'})
+
+    plt.title("Topic Distribution Across RBI MPC Meetings (2016 - 2026)", fontsize=16, pad=20)
+    plt.xlabel("MPC Meeting Date", fontsize=12)
+    plt.ylabel("Economic Topic", fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig("topic_distribution_heatmap.png", dpi=300)
+    plt.show()
+
+    # ==========================================
+    # Graph 2: Sentiment Balance Heatmap
+    # ==========================================
+    print("Generating Sentiment Balance Heatmap...")
+    # Pivot the data: Rows = Topics, Columns = Dates, Values = Sentiment Balance
+    sentiment_pivot = df.pivot_table(
+        index='topic_name',
+        columns='date_str',
+        values='sentiment_balance',
+        aggfunc='mean'
+    ).fillna(0) # 0 means neutral/no data
+
+    plt.figure(figsize=(16, 8))
+    # Using a Red-Yellow-Green colormap (RdYlGn).
+    # Red = Hawkish (-1), Green = Dovish (+1), Yellow = Neutral (0)
+    sns.heatmap(
+        sentiment_pivot,
+        cmap="RdYlGn",
+        linewidths=.5,
+        center=0,
+        vmin=-1,
+        vmax=1,
+        cbar_kws={'label': 'Sentiment Balance (-1 Hawkish to +1 Dovish)'}
+    )
+
+    plt.title("Sentiment Balance by Topic Across RBI MPC Meetings (2016 - 2026)", fontsize=16, pad=20)
+    plt.xlabel("MPC Meeting Date", fontsize=12)
+    plt.ylabel("Economic Topic", fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig("sentiment_balance_heatmap.png", dpi=300)
+    plt.show()
+
+    # ==========================================
+    # Graph 3: Stacked Bar Chart of Overall Sentiment
+    # ==========================================
+    print("Generating Overall Sentiment Stacked Bar Chart...")
+    # Aggregate total dovish, hawkish, and neutral counts per date
+    daily_totals = df.groupby('date_str')[['dovish_count', 'hawkish_count', 'neutral_count']].sum()
+
+    # Create a stacked bar chart
+    ax = daily_totals.plot(
+        kind='bar',
+        stacked=True,
+        figsize=(16, 6),
+        color=['#2ca02c', '#d62728', '#7f7f7f']  # Green for Dovish, Red for Hawkish, Gray for Neutral
+    )
+
+    plt.title("Total Sentence Sentiment Over Time (2016 - 2026)", fontsize=16, pad=20)
+    plt.xlabel("MPC Meeting Date", fontsize=12)
+    plt.ylabel("Number of Sentences", fontsize=12)
+    plt.legend(['Dovish', 'Hawkish', 'Neutral'], title='Sentiment')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig("sentiment_stacked_bar.png", dpi=300)
+    plt.show()
+
+if __name__ == "__main__":
+    create_visualizations()
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def create_advanced_visualizations():
+    print("Loading data...")
+    # Load your aggregated daily sentiment dataset
+    df = pd.read_csv("rbi_daily_sentiment_for_regression.csv")
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+
+    # ==========================================
+    # Graph 1: Evolution of Topic Prevalence (Line Chart)
+    # Matches Figure 3 in the paper
+    # ==========================================
+    print("Generating Topic Evolution Line Chart...")
+    # Pivot the data
+    topic_evolution = df.pivot_table(
+        index='date',
+        columns='topic_name',
+        values='total_sentences',
+        aggfunc='sum'
+    ).fillna(0)
+
+    # Apply a 3-meeting rolling average to smooth out the jagged lines
+    # This makes the broader macroeconomic trends much easier to see!
+    topic_evolution_smoothed = topic_evolution.rolling(window=3, min_periods=1).mean()
+
+    plt.figure(figsize=(16, 8))
+    # We use a distinct color palette so the lines don't blend together
+    sns.set_palette("tab10")
+    for column in topic_evolution_smoothed.columns:
+        plt.plot(topic_evolution_smoothed.index, topic_evolution_smoothed[column], label=column, linewidth=2.5)
+
+    plt.title("Evolution of Topic Prevalence Over Time (3-Meeting Moving Average)", fontsize=16, pad=20)
+    plt.xlabel("Year", fontsize=12)
+    plt.ylabel("Frequency (Smoothed Sentence Count)", fontsize=12)
+    plt.legend(title="Economic Topics", bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.savefig("topic_evolution_line_chart.png", dpi=300, bbox_inches='tight')
+    plt.show()
+
+    # ==========================================
+    # Graph 2: Proportion of Sentiment by Topic (100% Stacked Bar)
+    # ==========================================
+    print("Generating Sentiment Proportion Chart...")
+    # Group by topic and sum the sentiment counts across the entire decade
+    topic_sentiment = df.groupby('topic_name')[['dovish_count', 'hawkish_count', 'neutral_count']].sum()
+
+    # Convert to percentages (rows sum to 100%)
+    topic_sentiment_pct = topic_sentiment.div(topic_sentiment.sum(axis=1), axis=0) * 100
+
+    # Sort by the most Hawkish topics to make it look clean
+    topic_sentiment_pct = topic_sentiment_pct.sort_values(by='hawkish_count', ascending=True)
+
+    # Plot as a horizontal stacked bar
+    ax = topic_sentiment_pct.plot(
+        kind='barh',
+        stacked=True,
+        figsize=(14, 8),
+        color=['#2ca02c', '#d62728', '#7f7f7f'] # Green, Red, Grey
+    )
+
+    plt.title("Proportion of Sentiment by Economic Topic (2016-2026)", fontsize=16, pad=20)
+    plt.xlabel("Percentage (%)", fontsize=12)
+    plt.ylabel("Economic Topic", fontsize=12)
+    plt.legend(['Dovish', 'Hawkish', 'Neutral'], title='Sentiment', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # Add percentage labels inside the bars
+    for p in ax.patches:
+        width, height = p.get_width(), p.get_height()
+        x, y = p.get_xy()
+        if width > 5: # Only show label if the bar chunk is big enough
+            ax.text(x+width/2, y+height/2, f"{width:.0f}%", horizontalalignment='center', verticalalignment='center', color='white', fontweight='bold')
+
+    plt.tight_layout()
+    plt.savefig("sentiment_proportion_bar.png", dpi=300, bbox_inches='tight')
+    plt.show()
+
+    # ==========================================
+    # Graph 3: Overall Macro Sentiment Trend (Line Chart)
+    # ==========================================
+    print("Generating Overall Sentiment Trend Line...")
+    # Calculate the global sentiment balance for each meeting day
+    overall_daily = df.groupby('date').agg({'dovish_count':'sum', 'hawkish_count':'sum'})
+    overall_daily['denominator'] = overall_daily['dovish_count'] + overall_daily['hawkish_count']
+
+    overall_daily['net_balance'] = 0.0 # Default to 0
+    mask = overall_daily['denominator'] > 0
+    overall_daily.loc[mask, 'net_balance'] = (overall_daily.loc[mask, 'dovish_count'] - overall_daily.loc[mask, 'hawkish_count']) / overall_daily.loc[mask, 'denominator']
+
+    # Smooth with a moving average to see the policy cycle
+    overall_daily['smoothed_balance'] = overall_daily['net_balance'].rolling(window=3, min_periods=1).mean()
+
+    plt.figure(figsize=(16, 6))
+    plt.plot(overall_daily.index, overall_daily['smoothed_balance'], color='black', linewidth=3, label="Overall Sentiment Balance")
+
+    # Add a red dashed line at 0 (Neutral)
+    plt.axhline(0, color='red', linestyle='--', alpha=0.5, label="Neutral Line")
+
+    # Fill the area above 0 with Green (Dovish) and below 0 with Red (Hawkish)
+    plt.fill_between(overall_daily.index, overall_daily['smoothed_balance'], 0, where=(overall_daily['smoothed_balance'] > 0), color='#2ca02c', alpha=0.3)
+    plt.fill_between(overall_daily.index, overall_daily['smoothed_balance'], 0, where=(overall_daily['smoothed_balance'] < 0), color='#d62728', alpha=0.3)
+
+    plt.title("Overall RBI Monetary Policy Sentiment Trend (2016-2026)", fontsize=16, pad=20)
+    plt.xlabel("Year", fontsize=12)
+    plt.ylabel("Sentiment Balance (-1 Hawkish to +1 Dovish)", fontsize=12)
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("overall_sentiment_trend.png", dpi=300)
+    plt.show()
+
+if __name__ == "__main__":
+    create_advanced_visualizations()
+
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+
+def run_local_projections():
+    print("1. Loading Sentiment Data...")
+    sentiment_df = pd.read_csv("rbi_daily_sentiment_for_regression.csv")
+    sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+
+    # Pivot so each topic has its own column
+    regression_df = sentiment_df.pivot(index='date', columns='topic_name', values='sentiment_balance').fillna(0)
+    regression_df.columns = [col.replace(' ', '_').replace('-', '_') for col in regression_df.columns]
+    regression_df = regression_df.reset_index()
+
+    # --- Create Dummy Variables ---
+    print("2. Constructing Dummies (COVID, GST, Governors)...")
+    regression_df['COVID'] = ((regression_df['date'] >= '2020-03-11') & (regression_df['date'] <= '2021-12-31')).astype(int)
+    regression_df['GST'] = (regression_df['date'] >= '2017-07-01').astype(int)
+    regression_df['Rajan'] = (regression_df['date'] <= '2016-09-04').astype(int)
+    regression_df['Patel'] = ((regression_df['date'] >= '2016-09-05') & (regression_df['date'] <= '2018-12-11')).astype(int)
+
+    print("3. Downloading BSE Sensex Market Data...")
+    start_date = (regression_df['date'].min() - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+    end_date = (regression_df['date'].max() + pd.Timedelta(days=60)).strftime('%Y-%m-%d')
+
+    sensex = yf.download('^BSESN', start=start_date, end=end_date, progress=False)
+
+    # --- THE FIX: Flatten yfinance MultiIndex columns ---
+    if isinstance(sensex.columns, pd.MultiIndex):
+        sensex.columns = sensex.columns.get_level_values(0)
+    # ---------------------------------------------------
+
+    sensex = sensex.reset_index()
+    sensex['Date'] = pd.to_datetime(sensex['Date']).dt.tz_localize(None)
+
+    sensex_close = sensex['Close'].squeeze()
+    sensex_open = sensex['Open'].squeeze()
+
+    print("4. Calculating Cumulative Forward Returns (h=0 to 30)...")
+    for h in range(31):
+        future_close = sensex_close.shift(-h)
+        sensex[f'Return_h{h}'] = np.log(future_close / sensex_open) * 10000
+
+    print("5. Merging Data...")
+    final_df = pd.merge(regression_df, sensex, left_on='date', right_on='Date', how='inner')
+
+    # Pick the topic to test
+    target_topic = 'Inflation_Dynamics_and_Price_Stability'
+    if target_topic not in final_df.columns:
+        target_topic = [c for c in regression_df.columns if c not in ['date', 'COVID', 'GST', 'Rajan', 'Patel']][0]
+
+    print(f"\n--- Running Local Projections for Topic: {target_topic} ---")
+
+    horizons = list(range(31))
+    betas = []
+    ci_lower = []
+    ci_upper = []
+
+    for h in horizons:
+        temp_df = final_df.dropna(subset=[f'Return_h{h}'])
+        Y = temp_df[f'Return_h{h}']
+        X = temp_df[[target_topic, 'COVID', 'GST', 'Rajan', 'Patel']]
+        X_sm = sm.add_constant(X)
+
+        # Fit OLS with HAC (Newey-West) standard errors
+        model = sm.OLS(Y, X_sm).fit(cov_type='HAC', cov_kwds={'maxlags': h + 1})
+
+        beta = model.params[target_topic]
+        conf_int = model.conf_int(alpha=0.10)
+
+        betas.append(beta)
+        ci_lower.append(conf_int.loc[target_topic, 0])
+        ci_upper.append(conf_int.loc[target_topic, 1])
+
+    print("6. Plotting the Impulse Response Function (IRF)...")
+    plt.figure(figsize=(10, 6))
+    plt.axhline(0, color='red', linestyle='-', linewidth=1)
+    plt.plot(horizons, betas, color='#1f77b4', linewidth=2, label=f'Response to {target_topic.replace("_", " ")}')
+    plt.fill_between(horizons, ci_lower, ci_upper, color='#1f77b4', alpha=0.2, label='90% CI')
+
+    plt.title(f"Dynamic Response of BSE Sensex to '{target_topic.replace('_', ' ')}'\n(Local Projections over 30 Days)", fontsize=14, pad=15)
+    plt.xlabel("Days from MPC Press Conference", fontsize=12)
+    plt.ylabel("Response (Basis Points)", fontsize=12)
+    plt.xlim(0, 30)
+    plt.legend(loc='upper left')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+
+    plt.savefig("impulse_response_function.png", dpi=300)
+    plt.show()
+
+    print("\nProject Analysis Complete! Check your folder for 'impulse_response_function.png'.")
+
+if __name__ == "__main__":
+
+    run_local_projections()
+
+
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+
+def run_all_local_projections():
+    print("1. Loading Sentiment Data...")
+    sentiment_df = pd.read_csv("rbi_daily_sentiment_for_regression.csv")
+    sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+
+    # Pivot so each topic has its own column
+    regression_df = sentiment_df.pivot(index='date', columns='topic_name', values='sentiment_balance').fillna(0)
+    regression_df.columns = [col.replace(' ', '_').replace('-', '_') for col in regression_df.columns]
+    regression_df = regression_df.reset_index()
+
+    # --- Create Dummy Variables ---
+    print("2. Constructing Dummies (COVID, GST, Governors)...")
+    regression_df['COVID'] = ((regression_df['date'] >= '2020-03-11') & (regression_df['date'] <= '2021-12-31')).astype(int)
+    regression_df['GST'] = (regression_df['date'] >= '2017-07-01').astype(int)
+    regression_df['Rajan'] = (regression_df['date'] <= '2016-09-04').astype(int)
+    regression_df['Patel'] = ((regression_df['date'] >= '2016-09-05') & (regression_df['date'] <= '2018-12-11')).astype(int)
+
+    print("3. Downloading BSE Sensex Market Data...")
+    start_date = (regression_df['date'].min() - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+    end_date = (regression_df['date'].max() + pd.Timedelta(days=60)).strftime('%Y-%m-%d')
+
+    sensex = yf.download('^BSESN', start=start_date, end=end_date, progress=False)
+
+    # Flatten yfinance MultiIndex columns if necessary
+    if isinstance(sensex.columns, pd.MultiIndex):
+        sensex.columns = sensex.columns.get_level_values(0)
+
+    sensex = sensex.reset_index()
+    sensex['Date'] = pd.to_datetime(sensex['Date']).dt.tz_localize(None)
+
+    sensex_close = sensex['Close'].squeeze()
+    sensex_open = sensex['Open'].squeeze()
+
+    print("4. Calculating Cumulative Forward Returns (h=0 to 30)...")
+    for h in range(31):
+        future_close = sensex_close.shift(-h)
+        sensex[f'Return_h{h}'] = np.log(future_close / sensex_open) * 10000
+
+    print("5. Merging Data...")
+    final_df = pd.merge(regression_df, sensex, left_on='date', right_on='Date', how='inner')
+
+    # Extract all the topic names dynamically (ignoring the date and dummy columns)
+    topics_to_test = [c for c in regression_df.columns if c not in ['date', 'COVID', 'GST', 'Rajan', 'Patel']]
+
+    print(f"\nFound {len(topics_to_test)} topics to analyze. Starting regressions...")
+
+    # List to store all regression results
+    all_results = []
+
+    # --- THE LOOP: Run LP for every single topic ---
+    for target_topic in topics_to_test:
+        print(f"  -> Processing: {target_topic.replace('_', ' ')}")
+
+        horizons = list(range(31))
+        betas = []
+        ci_lower = []
+        ci_upper = []
+
+        for h in horizons:
+            temp_df = final_df.dropna(subset=[f'Return_h{h}'])
+            Y = temp_df[f'Return_h{h}']
+            X = temp_df[[target_topic, 'COVID', 'GST', 'Rajan', 'Patel']]
+            X_sm = sm.add_constant(X)
+
+            # Fit OLS with HAC (Newey-West) standard errors
+            model = sm.OLS(Y, X_sm).fit(cov_type='HAC', cov_kwds={'maxlags': h + 1})
+
+            beta = model.params[target_topic]
+            conf_int = model.conf_int(alpha=0.10)
+
+            betas.append(beta)
+            ci_lower.append(conf_int.loc[target_topic, 0])
+            ci_upper.append(conf_int.loc[target_topic, 1])
+
+            all_results.append({
+                'topic': target_topic.replace('_', ' '),
+                'horizon': h,
+                'beta': beta,
+                'ci_lower': ci_lower[-1],
+                'ci_upper': ci_upper[-1]
+            })
+
+        # --- Plotting individual graphs ---
+        plt.figure(figsize=(10, 6))
+        plt.axhline(0, color='red', linestyle='-', linewidth=1)
+        plt.plot(horizons, betas, color='#1f77b4', linewidth=2, label=f'Response to {target_topic.replace('_', ' ')}')
+        plt.fill_between(horizons, ci_lower, ci_upper, color='#1f77b4', alpha=0.2, label='90% CI')
+
+        plt.title(f"Dynamic Response of BSE Sensex to '{target_topic.replace('_', ' ')}'\n(Local Projections over 30 Days)", fontsize=14, pad=15)
+        plt.xlabel("Days from MPC Press Conference", fontsize=12)
+        plt.ylabel("Response (Basis Points)", fontsize=12)
+        plt.xlim(0, 30)
+        plt.legend(loc='upper left')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+
+        # Save each plot with a unique filename
+        filename = f"irf_{target_topic.lower()}.png"
+        plt.savefig(filename, dpi=300)
+
+        # Display the plot in the notebook
+        plt.show()
+
+        # CRITICAL: Close the plot memory so the next loop starts with a fresh canvas
+        plt.close()
+
+    print("\nProject Analysis Complete! All IRF graphs have been saved to your folder.")
+
+    # Display summary table
+    summary_table = pd.DataFrame(all_results)
+    print("\n--- Summary Table of Regression Coefficients ---")
+    display(summary_table)
+
+if __name__ == "__main__":
+    run_all_local_projections()
